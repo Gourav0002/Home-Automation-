@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MQTT Over Websocket</title>
+    <!-- CSS Styling for webpage -->
+    <style>
+        body{
+          background-color: rgb(157, 187, 184);
+        }
+        .switch {
+          position: relative;
+          display: inline-block;
+          width: 60px;
+          height: 34px;
+          bottom: 5px;
+          left: 10px;
+        }
+        
+        .switch input { 
+          opacity: 0;
+          width: 0;
+          height: 0;
+        }
+        
+        .slider {
+          position: absolute;
+          cursor: pointer;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background-color: rgb(240, 35, 35);
+          -webkit-transition: .4s;
+          transition: .4s;
+        }
+        
+        .slider:before {
+          position: absolute;
+          content: "";
+          height: 26px;
+          width: 26px;
+          left: 4px;
+          bottom: 4px;
+          background-color: white;
+          -webkit-transition: .4s;
+          transition: .4s;
+        }
+        
+        input:checked + .slider {
+          background-color: #2196F3;
+        }
+        
+        input:focus + .slider {
+          box-shadow: 0 0 1px #2196F3;
+        }
+        
+        input:checked + .slider:before {
+          -webkit-transform: translateX(26px);
+          -ms-transform: translateX(26px);
+          transform: translateX(26px);
+        }
+        
+        /* Rounded sliders */
+        .slider.round {
+          border-radius: 34px;
+        }
+        
+        .slider.round:before {
+          border-radius: 50%;
+        }
+    </style>
+</head>
+<body>
+  <!-- Including the Paho JavaScript client library for MQTT over websockets -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.js" type="text/javascript"></script>
+    <script>
+        //Using the HiveMQ public Broker, with a random client Id
+        var client = new Paho.MQTT.Client("broker.hivemq.com", 8000, "myclientid_" + parseInt(Math.random() * 100, 10));
+
+        //Gets called if the websocket/mqtt connection gets disconnected for any reason
+        client.onConnectionLost = function (responseObject) {
+            //Alert user that the connection was disconnected
+            alert("connection lost: " + responseObject.errorMessage);
+        };
+
+        //Gets called whenever you receive a message for your subscriptions
+        client.onMessageArrived = function (message) {
+            //Check for messages from the DHT11 sensor and display them on webpage
+            if(message.destinationName == "test1/weather"){
+                var res = JSON.parse(message.payloadString);
+                document.getElementById("weather").innerHTML = '<span>Temperature: ' + res.t + '&deg;C</span><br/>Humidity: ' + res.h + '%</span><br/>';
+            }
+            //Check for messages from the PIR sensor for motion detected inside room
+            if(message.destinationName == "test1/pir"){
+                document.getElementById("pir").innerHTML = '<span>PIR Status: '+ (message.payloadString=="1"?'Motion detected inside room</span><br/>':'No motion detected for last 30 seconds</span><br/>');
+            }
+            //Check for the status of the light, fan and automatic switch send from the Arduino Uno
+            if(message.destinationName == "test1/switchState"){
+              var switchState = JSON.parse(message.payloadString);
+              document.getElementById("lightSwitch").checked = (switchState.l == 0) ? true : false;
+              document.getElementById("fanSwitch").checked = (switchState.f == 0) ? true : false;
+              document.getElementById("autoSwitch").checked = (switchState.a == true) ? true : false;
+            }
+
+        };
+
+        //Connect Options
+        var options = {
+            timeout: 3,
+            //Gets Called if the connection has sucessfully been established
+            onSuccess: function () {
+              //Alert the user that the websocket connection was successful
+                alert("Connected");
+            },
+            //Gets Called if the connection could not be established
+            onFailure: function (message) {
+              //Alert the user with error messages for disconnection from the broker
+                alert("Connection failed: " + message.errorMessage);
+            }
+        };
+
+        //Creates a new Paho.MQTT.Message Object and sends it to the HiveMQ MQTT Broker
+        function publish(payload, topic, qos) {
+            //Publish messages to the MQTT broker
+            var message = new Paho.MQTT.Message(payload);
+            message.destinationName = topic;
+            message.qos = qos;
+            client.send(message);
+        }
+    </script>
+    <center>
+        <!-- Button to connect to the MQTT Broker -->
+        <button onclick="client.connect(options);">Connect</button>
+        <!-- Button to subscribe to all messages in the 'test1' and it's subtopics with quality of service as 0 -->
+        <button onclick="client.subscribe('test1/#', {qos: 0}); alert('Subscribed');">Subscribe</button>
+        <!-- Button to disconnect from the MQTT Broker and close the websocket connection -->
+        <button onclick="client.disconnect();">Disconnect</button>
+        <br>
+        <hr>
+        <br>
+        <!-- Heading 3 for displaying Temperature and Humidity -->
+        <h3 id="weather"></h3>
+        <!-- Heading 3 for displaying the status of PIR motion sensor -->
+        <h3 id="pir"></h3>
+        <!-- A slider switch for switching the Light -->
+        <h3>Light switch:<label class="switch">
+            <input type="checkbox" id="lightSwitch">
+            <span class="slider round"></span>
+          </label>
+        </h3>
+        <!-- A slider switch for switching the Fan -->
+        <h3>Fan switch:<label class="switch">
+          <input type="checkbox" id="fanSwitch">
+          <span class="slider round"></span>
+        </label>
+        </h3>
+        <!-- A range slider switch for controlling fan speed using PWM -->
+        <h3>Fan Speed:
+            <input type="range" min="0" max="255" value="128" id="fanSpeed"
+            onchange="showVal(this.value)"
+            ><span id="valBox"></span>
+        </h3>
+        <!-- A slider switch for switching between Manual and Automatic operation -->
+        <h3>Automatic switching:<label class="switch">
+          <input type="checkbox" id="autoSwitch">
+          <span class="slider round"></span>
+        </label>
+      </h3>
+    </center>
+    <script>
+        // Assigning variables to store the references of the three slider switches
+        var checkboxLight = document.getElementById("lightSwitch");
+        var checkboxFan = document.getElementById("fanSwitch");
+        var checkboxAuto = document.getElementById("autoSwitch");
+
+        //Listening for change in the state of the slider switches
+        //and publish the state on their respective sub topics
+        checkboxLight.addEventListener( 'change', function() {
+            this.checked?publish('ON','test1/ls',0):publish('OFF','test1/ls',0);
+        });
+
+        checkboxFan.addEventListener('change', function(){
+          this.checked?publish('ON','test1/fs',0):publish('OFF','test1/fs',0);
+        });
+        checkboxAuto.addEventListener('change', function(){
+          this.checked?publish('1','test1/auto',0):publish('0','test1/auto',0);
+        });
+
+        //Publish the PWM value of the range slider switch to the broker
+        function showVal(newVal){
+            document.getElementById("valBox").innerHTML=newVal;
+            publish(newVal,'test1/fanSpeed',0);
+        }
+
+    </script>
+</body>
+</html>

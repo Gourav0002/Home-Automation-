@@ -1,0 +1,224 @@
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <DHT.h>
+// Update these with values suitable for your network.
+
+const char* ssid = "IoTHub";
+const char* password = "qwertyuiop";
+const char* mqtt_server = "broker.hivemq.com";
+// Setting DHT on pin 4
+#define DHTPIN D2
+#define DHTTYPE DHT11
+// Creating an instance of DHT
+DHT dht(DHTPIN, DHTTYPE);
+const int FAN = 16;
+const int LIGHT = 2;
+bool detected = false;
+bool automatic = false;
+WiFiClient espClient;
+PubSubClient client(espClient);
+unsigned long lastSend = 0;
+unsigned long lastCheck = 0;
+#define MSG_BUFFER_SIZE	(50)
+char msg[MSG_BUFFER_SIZE];
+int value = 0;
+const int pirPin = D7;
+void setup_wifi() {
+
+  delay(10);
+  // We start by connecting to a WiFi network
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  randomSeed(micros());
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  if (strcmp(topic,"test1/ls") == 0){
+
+    if (strncmp((const char*)payload, "ON", 2) == 0) {
+      digitalWrite(LIGHT, LOW);
+      Serial.println("LED ON");
+    }
+    if (strncmp((const char*)payload, "OFF", 3) == 0) {
+      digitalWrite(LIGHT, HIGH);
+      Serial.println("LED OFF");
+    }
+  }
+  if (strcmp(topic,"test1/fs") == 0){
+
+    if (strncmp((const char*)payload, "ON", 2) == 0) {
+      digitalWrite(FAN, LOW);
+      Serial.println("FAN ON");
+    }
+    if (strncmp((const char*)payload, "OFF", 3) == 0) {
+      digitalWrite(FAN, HIGH);
+      Serial.println("FAN OFF");
+    }
+  }
+  if (strcmp(topic,"test1/auto") == 0){
+
+    if (strncmp((const char*)payload, "1", 1) == 0) { // ONgcvjhvkh -> 2 
+      automatic = true;
+      Serial.print("Automatic: ");
+      Serial.println(automatic);
+    }
+    if (strncmp((const char*)payload, "0", 1) == 0) {
+      automatic = false;
+      Serial.print("Automatic: ");
+      Serial.println(automatic);
+    }
+  }
+
+}
+
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Create a random client ID
+    String clientId = "ESP8266Client-";
+    clientId += String(random(0xffff), HEX);
+    // Attempt to connect
+    if (client.connect(clientId.c_str())) {
+      Serial.println("connected");
+      // Once connected, publish an announcement...
+      client.publish("test1", "reconnected");
+      // ... and resubscribe
+      client.subscribe("test1/fs");
+      client.subscribe("test1/ls");
+      client.subscribe("test1/fanSpeed");
+      client.subscribe("test1/auto");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+//The getAndSendTemperatureAndHumidityData reads data from DHT sensor and sends it to MQTT broker on subtopic weather
+void getAndSendTemperatureAndHumidityData()
+{
+  float h = dht.readHumidity();
+  float t = dht.readTemperature();
+
+  if (isnan(h) || isnan(t)) { //not a number
+    Serial.println("Failed to read from DHT sensor!");
+    return;
+  }
+
+  String temperature = String(t);
+  String humidity = String(h);
+
+  // Prepare a JSON payload string JavaScript Object Notation -> Key Value pair
+  
+
+  String payload = "{";
+  payload += "\"t\":";
+  payload += temperature; 
+  payload += ",";
+  payload += "\"h\":";
+  payload += humidity;
+  payload += "}";
+
+  // Send payload
+  char weather[50];
+  payload.toCharArray(weather, 50);
+  client.publish("test1/weather", weather);
+  Serial.println(weather);
+}
+
+
+//The checkPIRStatus detects motion inside room and sends the information to pir subtopic
+void checkPIRStatus(){
+  int pirStatus = digitalRead(pirPin); 
+  Serial.println(pirStatus);
+  if (pirStatus == 1) {
+    detected = true;
+    Serial.println("Motion Detected");
+    lastCheck = millis();
+  } 
+  //Wait for 15 minutes before setting the detected flag to false 
+  else if( millis() - lastCheck >= 30*1000){
+    detected = false;
+    Serial.println("Motion not Detected for 30 secs");
+    lastCheck = millis();
+  }
+  client.publish("test1/pir", detected?"1":"0");
+  if(!detected){
+    digitalWrite(FAN, HIGH);
+    digitalWrite(LIGHT, HIGH);
+  }else if(automatic && detected){
+    digitalWrite(FAN, LOW);
+    digitalWrite(LIGHT, LOW);
+  }
+}
+
+//Get the switch status of light and fan pins on arduino and send information on switchState subtopic
+void getSwitchState(){
+  int ls = digitalRead(LIGHT);
+  int fs = digitalRead(FAN);
+  String light = String(ls);
+  String fan = String(fs);
+  String payload = "{";
+  payload += "\"l\":";
+  payload += light; 
+  payload += ",";
+  payload += "\"f\":";
+  payload += fan;
+  payload += ",";
+  payload += "\"a\":";
+  payload += automatic;
+  payload += "}";
+  char switchState[20];
+  payload.toCharArray(switchState, 20);
+  client.publish("test1/switchState", switchState);
+}
+
+
+void setup() {
+  pinMode(LIGHT, OUTPUT);     // Initialize the BUILTIN_LED pin as an output
+  pinMode(FAN, OUTPUT);
+  pinMode(pirPin, INPUT);
+  dht.begin();
+  Serial.begin(115200);
+  setup_wifi();
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+}
+
+void loop() {
+
+  //reconnect function is called when client is disconnected from broker
+  if (!client.connected()) {
+    reconnect();
+  }
+  delay(40);
+  //client.loop function continuously checks for new messages on the subscribed topics
+  client.loop();
+
+  //Send the data after every 5 seconds
+  if ( millis() - lastSend > 5000 ) {
+    getAndSendTemperatureAndHumidityData();
+    checkPIRStatus();
+    getSwitchState();
+    lastSend = millis();
+  }
+}
